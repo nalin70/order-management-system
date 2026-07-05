@@ -7,6 +7,7 @@ from drf_yasg.utils import swagger_auto_schema
 from apps.orders.permissions import IsAdminOrOwner
 from apps.orders.pagination import OrderPagination
 from apps.orders.serializers import (
+    OrderCreateSerializer,
     OrderSerializer,
     OrderStatusUpdateSerializer,
 )
@@ -23,12 +24,16 @@ class OrderListCreateView(APIView):
         serializer = OrderSerializer(page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
-    @swagger_auto_schema(request_body=OrderSerializer)
+    @swagger_auto_schema(
+        request_body=OrderCreateSerializer, responses={201: OrderSerializer}
+    )
     def post(self, request):
-        serializer = OrderSerializer(data=request.data)
+        serializer = OrderCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            order = OrderService.create_order(request.user, serializer.validated_data.get("items", []))
+            order = OrderService.create_order(
+                request.user, serializer.validated_data["items"]
+            )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
