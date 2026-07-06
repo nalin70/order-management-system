@@ -67,6 +67,8 @@ celery -A config worker --loglevel=info
 
 Run Redis locally or use Docker Compose.
 
+For normal local API browsing, Django uses in-memory cache by default, so Swagger and authenticated APIs do not require Redis just to render. Set `USE_REDIS_CACHE=True` only when a Redis cache server is reachable. Celery order/payment processing still needs Redis as its broker unless `CELERY_TASK_ALWAYS_EAGER=True` is enabled for development/testing.
+
 Run the frontend:
 
 ```bash

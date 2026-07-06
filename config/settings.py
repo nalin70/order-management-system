@@ -45,7 +45,10 @@ def env_list(key, default=None):
 # ------------------------------------------------------------------------------
 # Security
 # ------------------------------------------------------------------------------
-SECRET_KEY = env("DJANGO_SECRET_KEY", env("SECRET_KEY", "unsafe-dev-secret-key"))
+SECRET_KEY = env(
+    "DJANGO_SECRET_KEY",
+    env("SECRET_KEY", "unsafe-development-secret-key-change-me-2026"),
+)
 
 DEBUG = env_bool("DJANGO_DEBUG", env_bool("DEBUG", False))
 
@@ -237,11 +240,13 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 
-if RUNNING_TESTS:
+USE_REDIS_CACHE = env_bool("USE_REDIS_CACHE", False)
+
+if RUNNING_TESTS or not USE_REDIS_CACHE:
     CACHES = {
         "default": {
             "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-            "LOCATION": "test-cache",
+            "LOCATION": "test-cache" if RUNNING_TESTS else "local-dev-cache",
         }
     }
 else:
@@ -251,6 +256,7 @@ else:
             "LOCATION": env("REDIS_CACHE_URL", "redis://localhost:6379/1"),
             "OPTIONS": {
                 "CLIENT_CLASS": "django_redis.client.DefaultClient",
+                "IGNORE_EXCEPTIONS": True,
             },
         }
     }
