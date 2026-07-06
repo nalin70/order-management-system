@@ -21,6 +21,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = OrderItem
         fields = ["id", "product_id", "name", "quantity", "unit_price"]
+        read_only_fields = ["id", "name", "unit_price"]
 
     def validate_quantity(self, value):
         if value <= 0:
@@ -28,8 +29,17 @@ class OrderItemSerializer(serializers.ModelSerializer):
         return value
 
 
-class OrderSerializer(serializers.ModelSerializer):
+class OrderCreateSerializer(serializers.Serializer):
     items = OrderItemSerializer(many=True)
+
+    def validate_items(self, value):
+        if not value:
+            raise serializers.ValidationError("Order must contain at least one item.")
+        return value
+
+
+class OrderSerializer(serializers.ModelSerializer):
+    items = OrderItemSerializer(many=True, read_only=True)
     status = serializers.CharField(read_only=True)
     total_amount = serializers.DecimalField(
         max_digits=12, decimal_places=2, read_only=True
@@ -39,36 +49,14 @@ class OrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = ["id", "user", "status", "total_amount", "created_at", "items"]
-        read_only_fields = ["id", "user", "status", "total_amount", "created_at"]
-
-    def create(self, validated_data):
-        items_data = validated_data.pop("items", [])
-        order = Order.objects.create(**validated_data)
-        total_amount = 0
-
-        for item_data in items_data:
-            product = item_data["product"]
-            quantity = item_data["quantity"]
-
-            if product.stock < quantity:
-                order.delete()
-                raise serializers.ValidationError(
-                    f"Product {product.name} does not have enough stock."
-                )
-
-            OrderItem.objects.create(
-                order=order,
-                product=product,
-                quantity=quantity,
-                price=product.price,
-            )
-            total_amount += product.price * quantity
-            product.stock -= quantity
-            product.save()
-
-        order.total_amount = total_amount
-        order.save()
-        return order
+        read_only_fields = [
+            "id",
+            "user",
+            "status",
+            "total_amount",
+            "created_at",
+            "items",
+        ]
 
 
 class OrderStatusUpdateSerializer(serializers.Serializer):
