@@ -4,7 +4,11 @@ from apps.orders.models import Order
 class OrderRepository:
     @staticmethod
     def get_queryset():
-        return Order.objects.select_related("user").prefetch_related("items__product").all()
+        return (
+            Order.objects.select_related("user")
+            .prefetch_related("items__product", "payment_transactions")
+            .all()
+        )
 
     @staticmethod
     def get_order(order_id):

@@ -1,6 +1,6 @@
 from django.contrib.auth import authenticate
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -9,7 +9,10 @@ from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 
 from apps.authentication.services.auth_service import AuthService
+from common.permissions.base import IsAdminRole
 from .serializers import (
+    AdminUserSerializer,
+    AdminUserUpdateSerializer,
     ChangePasswordSerializer,
     CustomerProfileSerializer,
     CustomerRegisterSerializer,
@@ -30,6 +33,9 @@ def error_response(errors, message="Validation failed.", status_code=status.HTTP
 
 
 class LoginView(APIView):
+    permission_classes = [AllowAny]
+    throttle_scope = "auth"
+
     @swagger_auto_schema(
         request_body=LoginSerializer,
         responses={
@@ -86,6 +92,9 @@ class LoginView(APIView):
 
 
 class CustomerRegisterView(APIView):
+    permission_classes = [AllowAny]
+    throttle_scope = "auth"
+
     @swagger_auto_schema(request_body=CustomerRegisterSerializer)
     def post(self, request):
         serializer = CustomerRegisterSerializer(data=request.data)
@@ -140,3 +149,50 @@ class ChangePasswordView(APIView):
             return error_response({"detail": str(exc)}, status_code=status.HTTP_403_FORBIDDEN)
 
         return success_response({}, message="Password changed successfully.")
+
+
+class AdminUserListView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminRole]
+
+    @swagger_auto_schema(responses={200: AdminUserSerializer(many=True)})
+    def get(self, request):
+        users = AuthService.list_users()
+        return success_response(
+            AdminUserSerializer(users, many=True).data,
+            message="Users retrieved successfully.",
+        )
+
+
+class AdminUserDetailView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminRole]
+
+    @swagger_auto_schema(responses={200: AdminUserSerializer()})
+    def get(self, request, pk):
+        user = AuthService.get_user(pk)
+        if not user:
+            return error_response(
+                {"detail": "User not found."},
+                message="User not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        return success_response(AdminUserSerializer(user).data)
+
+    @swagger_auto_schema(
+        request_body=AdminUserUpdateSerializer,
+        responses={200: AdminUserSerializer()},
+    )
+    def patch(self, request, pk):
+        user = AuthService.get_user(pk)
+        if not user:
+            return error_response(
+                {"detail": "User not found."},
+                message="User not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        serializer = AdminUserUpdateSerializer(user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        user = AuthService.update_user(user, serializer.validated_data)
+        return success_response(
+            AdminUserSerializer(user).data,
+            message="User updated successfully.",
+        )

@@ -12,6 +12,7 @@ from apps.orders.serializers import (
     OrderStatusUpdateSerializer,
 )
 from apps.orders.services.order_service import OrderService
+from common.permissions.base import is_admin_user
 
 
 class OrderListCreateView(APIView):
@@ -59,7 +60,7 @@ class OrderStatusUpdateView(APIView):
         order = OrderService.get_order(request.user, pk)
         if not order:
             return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not request.user.is_staff:
+        if not is_admin_user(request.user):
             return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = OrderStatusUpdateSerializer(data=request.data)

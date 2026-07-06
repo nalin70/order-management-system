@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from apps.inventory.models import Product
 from apps.orders.models import Order, OrderItem
+from apps.payments.models import PaymentTransaction
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -41,6 +42,9 @@ class OrderCreateSerializer(serializers.Serializer):
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
     status = serializers.CharField(read_only=True)
+    requested_items = serializers.JSONField(read_only=True)
+    is_paid = serializers.SerializerMethodField()
+    payment_status = serializers.SerializerMethodField()
     total_amount = serializers.DecimalField(
         max_digits=12, decimal_places=2, read_only=True
     )
@@ -48,15 +52,37 @@ class OrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ["id", "user", "status", "total_amount", "created_at", "items"]
+        fields = [
+            "id",
+            "user",
+            "status",
+            "total_amount",
+            "created_at",
+            "requested_items",
+            "items",
+            "is_paid",
+            "payment_status",
+        ]
         read_only_fields = [
             "id",
             "user",
             "status",
             "total_amount",
             "created_at",
+            "requested_items",
             "items",
+            "is_paid",
+            "payment_status",
         ]
+
+    def get_is_paid(self, obj):
+        return obj.payment_transactions.filter(
+            status=PaymentTransaction.Status.SUCCESS
+        ).exists()
+
+    def get_payment_status(self, obj):
+        latest_payment = obj.payment_transactions.order_by("-created_at").first()
+        return latest_payment.status if latest_payment else None
 
 
 class OrderStatusUpdateSerializer(serializers.Serializer):

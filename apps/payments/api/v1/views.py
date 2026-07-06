@@ -8,6 +8,7 @@ from apps.orders.repositories.order_repository import OrderRepository
 from apps.orders.permissions import IsAdminOrOwner
 from apps.payments.models import PaymentTransaction
 from apps.payments.services.payment_service import PaymentService
+from common.permissions.base import is_admin_user
 from .serializers import (
     PaymentInitiateSerializer,
     PaymentRetrySerializer,
@@ -19,7 +20,7 @@ class PaymentListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if request.user.is_staff:
+        if is_admin_user(request.user):
             transactions = PaymentTransaction.objects.all().order_by("-created_at")
         else:
             transactions = PaymentTransaction.objects.filter(order__user=request.user).order_by("-created_at")
@@ -52,21 +53,27 @@ class PaymentInitiateView(APIView):
         if not order:
             return Response({"success": False, "message": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if order.user != request.user and not request.user.is_staff:
+        if order.user != request.user and not is_admin_user(request.user):
             return Response({"success": False, "message": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
 
         if order.status not in [
-            order.Status.PENDING,
             order.Status.INVENTORY_RESERVED,
+            order.Status.PAYMENT_FAILED,
         ]:
             return Response(
                 {"success": False, "message": "Order is not in a payable state."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        payment = PaymentService.initiate_payment(order, order.total_amount)
+        try:
+            payment = PaymentService.initiate_payment(order, order.total_amount)
+        except ValueError as exc:
+            return Response(
+                {"success": False, "message": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         serializer = PaymentTransactionSerializer(payment)
-        return Response({"success": True, "message": "Payment initiated.", "data": serializer.data}, status=status.HTTP_201_CREATED)
+        return Response({"success": True, "message": "Payment queued.", "data": serializer.data}, status=status.HTTP_202_ACCEPTED)
 
 
 class PaymentRetryView(APIView):
@@ -78,7 +85,7 @@ class PaymentRetryView(APIView):
         if not payment:
             return Response({"success": False, "message": "Payment transaction not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if payment.order.user != request.user and not request.user.is_staff:
+        if payment.order.user != request.user and not is_admin_user(request.user):
             return Response({"success": False, "message": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
 
         if payment.status != PaymentTransaction.Status.FAILED:
@@ -89,4 +96,4 @@ class PaymentRetryView(APIView):
 
         payment = PaymentService.retry_payment(payment)
         serializer = PaymentTransactionSerializer(payment)
-        return Response({"success": True, "message": "Payment retry processed.", "data": serializer.data})
+        return Response({"success": True, "message": "Payment retry queued.", "data": serializer.data}, status=status.HTTP_202_ACCEPTED)
