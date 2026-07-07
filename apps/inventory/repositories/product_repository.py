@@ -4,7 +4,7 @@ from apps.inventory.models import Product
 class ProductRepository:
     @staticmethod
     def get_queryset():
-        return Product.objects.all()
+        return Product.objects.all().order_by("id")
 
     @staticmethod
     def get_product(product_id):

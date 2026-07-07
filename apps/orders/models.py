@@ -29,6 +29,7 @@ class Order(models.Model):
         decimal_places=2,
         default=Decimal("0.00"),
     )
+    requested_items = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -7,6 +7,7 @@ from django.db import transaction
 from apps.orders.models import Order
 from apps.payments.models import PaymentTransaction
 from apps.payments.repositories.payment_repository import PaymentRepository
+from common.utils.tasks import enqueue_task
 
 logger = logging.getLogger(__name__)
 
@@ -17,50 +18,104 @@ class PaymentService:
         return uuid.uuid4().hex
 
     @staticmethod
-    @transaction.atomic
-    def initiate_payment(order: Order, amount):
+    def initiate_payment(order: Order, amount=None, enqueue=True):
         logger.info(
             "Initiating payment for order=%s amount=%s",
             order.id,
-            amount,
+            amount or order.total_amount,
         )
 
-        payment = PaymentRepository.create_transaction(
-            order=order,
-            amount=amount,
-            status=PaymentTransaction.Status.PENDING,
-            transaction_reference=PaymentService._generate_reference(),
-        )
+        with transaction.atomic():
+            order = Order.objects.select_for_update().filter(id=order.id).first()
+            if not order:
+                raise ValueError("Order not found.")
+            if order.payment_transactions.filter(
+                status=PaymentTransaction.Status.SUCCESS
+            ).exists():
+                raise ValueError("Order has already been paid.")
+            if order.status not in [
+                Order.Status.INVENTORY_RESERVED,
+                Order.Status.PAYMENT_FAILED,
+            ]:
+                raise ValueError("Order is not in a payable state.")
 
-        success = PaymentService._simulate_payment()
-        if success:
-            return PaymentService.mark_success(payment)
+            order.status = Order.Status.PAYMENT_PROCESSING
+            order.save(update_fields=["status", "updated_at"])
 
-        return PaymentService.mark_failed(payment)
+            payment = PaymentRepository.create_transaction(
+                order=order,
+                amount=amount or order.total_amount,
+                status=PaymentTransaction.Status.PENDING,
+                transaction_reference=PaymentService._generate_reference(),
+            )
+
+        if enqueue:
+            from apps.payments.tasks import process_payment_transaction
+
+            enqueue_task(process_payment_transaction, payment.id)
+        return payment
+
+    @staticmethod
+    def retry_payment(payment: PaymentTransaction, enqueue=True):
+        with transaction.atomic():
+            payment = (
+                PaymentTransaction.objects.select_for_update()
+                .select_related("order")
+                .filter(id=payment.id)
+                .first()
+            )
+            if not payment:
+                raise ValueError("Payment transaction not found.")
+            if payment.status == PaymentTransaction.Status.SUCCESS:
+                logger.info(
+                    "Retry skipped for already successful payment=%s",
+                    payment.transaction_reference,
+                )
+                return payment
+
+            payment.retry_count += 1
+            logger.info(
+                "Retrying payment=%s retry_count=%s",
+                payment.transaction_reference,
+                payment.retry_count,
+            )
+            payment.status = PaymentTransaction.Status.PENDING
+            payment.save(update_fields=["retry_count", "status"])
+
+            order = payment.order
+            order.status = Order.Status.PAYMENT_PROCESSING
+            order.save(update_fields=["status", "updated_at"])
+
+        if enqueue:
+            from apps.payments.tasks import process_payment_transaction
+
+            enqueue_task(process_payment_transaction, payment.id)
+        return payment
+
+    @staticmethod
+    def process_order_payment(order_id):
+        order = Order.objects.filter(id=order_id).first()
+        if not order:
+            return None
+        return PaymentService.initiate_payment(order, order.total_amount, enqueue=True)
 
     @staticmethod
     @transaction.atomic
-    def retry_payment(payment: PaymentTransaction):
-        if payment.status == PaymentTransaction.Status.SUCCESS:
-            logger.info(
-                "Retry skipped for already successful payment=%s",
-                payment.transaction_reference,
-            )
-            return payment
-
-        payment.retry_count += 1
-        logger.info(
-            "Retrying payment=%s retry_count=%s",
-            payment.transaction_reference,
-            payment.retry_count,
+    def process_pending_transaction(payment_id):
+        payment = (
+            PaymentTransaction.objects.select_for_update()
+            .select_related("order")
+            .filter(id=payment_id)
+            .first()
         )
-        payment.status = PaymentTransaction.Status.PENDING
-        payment.save()
+        if not payment:
+            return None
+        if payment.status != PaymentTransaction.Status.PENDING:
+            return payment
 
         success = PaymentService._simulate_payment()
         if success:
             return PaymentService.mark_success(payment)
-
         return PaymentService.mark_failed(payment)
 
     @staticmethod
@@ -70,7 +125,7 @@ class PaymentService:
 
         order = payment.order
         order.status = Order.Status.COMPLETED
-        order.save()
+        order.save(update_fields=["status", "updated_at"])
 
         logger.info(
             "Payment success for order=%s transaction=%s",
@@ -86,7 +141,7 @@ class PaymentService:
 
         order = payment.order
         order.status = Order.Status.PAYMENT_FAILED
-        order.save()
+        order.save(update_fields=["status", "updated_at"])
 
         logger.warning(
             "Payment failed for order=%s transaction=%s retry_count=%s",

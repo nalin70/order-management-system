@@ -60,3 +60,33 @@ class ChangePasswordSerializer(serializers.Serializer):
             raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
         validate_password(attrs.get("new_password"))
         return attrs
+
+
+class AdminUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "username",
+            "first_name",
+            "last_name",
+            "email",
+            "role",
+            "is_active",
+            "is_staff",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class AdminUserUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ["first_name", "last_name", "role", "is_active"]
+
+    def validate_role(self, value):
+        valid_roles = {choice[0] for choice in User.Roles.choices}
+        if value not in valid_roles:
+            raise serializers.ValidationError("Invalid role.")
+        return value

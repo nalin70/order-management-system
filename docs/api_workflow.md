@@ -1,93 +1,61 @@
 # Order Management System API Workflow
 
-This document describes the backend API responsibilities and business workflow for the Django REST Framework Order Management System.
+This document describes the backend API responsibilities and the async customer order/payment workflow.
 
-## User roles
+## Roles
 
-### Customer
-
-Customers can:
+Customer:
 
 - Register and log in.
 - Browse products.
-- Place orders for one or more products.
-- View only their own orders.
-- Initiate payment for their own orders.
-- Retry failed payments for their own payment transactions.
-- View their own payment transaction history.
+- Place orders.
+- View only personal orders.
+- View and retry personal payment transactions.
 
-### Admin
-
-Admins can:
+Admin:
 
 - Create, update, and delete products.
-- View all orders.
+- View all orders and payments.
 - Update order status.
-- View all payment transactions.
-- Manage inventory through product stock changes.
+- Manage users.
 
-## Role-based API access
+## Role-Based API Access
 
 | API | Customer | Admin | Notes |
 | --- | --- | --- | --- |
 | `POST /api/auth/register/` | Yes | Yes | Creates a customer account. |
 | `POST /api/auth/login/` | Yes | Yes | Returns JWT access and refresh tokens. |
-| `GET /api/v1/products/` | Yes | Yes | Product browsing is read-only for customers. |
+| `POST /api/auth/refresh/` | Yes | Yes | Refreshes access token. |
+| `GET /api/auth/profile/` | Own profile | Own profile | Requires authentication. |
+| `GET /api/auth/users/` | No | Yes | Admin user management. |
+| `PATCH /api/auth/users/{id}/` | No | Yes | Update role or active state. |
+| `GET /api/v1/products/` | Yes | Yes | Public product browsing. |
 | `POST /api/v1/products/` | No | Yes | Admin product creation. |
-| `PATCH /api/v1/products/{id}/` | No | Yes | Admin inventory and product updates. |
+| `PATCH /api/v1/products/{id}/` | No | Yes | Admin product update. |
 | `DELETE /api/v1/products/{id}/` | No | Yes | Admin product deletion. |
-| `GET /api/v1/orders/` | Own orders | All orders | Uses the authenticated user to scope results. |
-| `POST /api/v1/orders/` | Yes | Yes | Creates an order for `request.user`; do not send `user_id`. |
-| `GET /api/v1/orders/{id}/` | Own order only | Any order | Object-level owner/admin permission applies. |
+| `GET /api/v1/orders/` | Own orders | All orders | Scoped by authenticated user. |
+| `POST /api/v1/orders/` | Yes | Yes | Creates a pending order and queues processing. |
+| `GET /api/v1/orders/{id}/` | Own order | Any order | Owner/admin permission. |
 | `PATCH /api/v1/orders/{id}/status/` | No | Yes | Admin-only status update. |
-| `GET /api/v1/payments/` | Own transactions | All transactions | Uses order ownership for customer scoping. |
-| `POST /api/v1/payments/initiate/` | Own order only | Any order | Starts payment for a payable order. |
-| `GET /api/v1/payments/{id}/` | Own transaction only | Any transaction | Uses the related order owner for permission. |
-| `POST /api/v1/payments/{id}/retry/` | Own failed transaction only | Any failed transaction | Only failed payments can be retried. |
+| `GET /api/v1/payments/` | Own transactions | All transactions | Scoped through order owner. |
+| `POST /api/v1/payments/initiate/` | Own payable order | Any payable order | Manual payment queue endpoint. |
+| `GET /api/v1/payments/{id}/` | Own transaction | Any transaction | Owner/admin permission. |
+| `POST /api/v1/payments/{id}/retry/` | Own failed transaction | Any failed transaction | Queues retry task. |
 
-## Customer order journey
+## Customer Journey
 
 ```text
-Customer Login
-↓
-Browse Products
-↓
-Select Product
-↓
-POST /api/v1/orders/
-↓
-Inventory Reserved
-↓
-POST /api/v1/payments/initiate/
-↓
-Payment Success
-↓
-Order Completed
+Login
+  -> Browse products
+  -> POST /api/v1/orders/
+  -> Order PENDING
+  -> Celery reserves inventory
+  -> Order INVENTORY_RESERVED
+  -> Celery processes payment
+  -> Order COMPLETED or PAYMENT_FAILED
 ```
 
-### 1. Customer login
-
-Customers authenticate with:
-
-```http
-POST /api/auth/login/
-```
-
-The response includes JWT tokens. The frontend must send the access token as a Bearer token on protected APIs.
-
-### 2. Browse products
-
-Customers fetch products with:
-
-```http
-GET /api/v1/products/
-```
-
-The products response includes product identifiers, pricing, and stock information that the frontend can use for product selection.
-
-### 3. Create an order
-
-Customers create an order with:
+## Create Order
 
 ```http
 POST /api/v1/orders/
@@ -104,51 +72,43 @@ Content-Type: application/json
 }
 ```
 
-The request must not include `user_id`. The backend associates the order with the logged-in customer using `request.user`.
+The API creates a `PENDING` order and stores requested items. It does not trust a submitted `user_id`; the order owner is always `request.user`.
 
-During order creation, the order service:
+## Async Inventory Reservation
 
-1. Validates that at least one item was submitted.
-2. Locks each selected product row while checking inventory.
-3. Validates that each quantity is greater than zero.
-4. Verifies that stock is available.
-5. Creates one `OrderItem` per requested product.
-6. Stores the product price on each order item.
-7. Decrements product stock to reserve inventory.
-8. Calculates `total_amount` from item price and quantity.
-9. Marks the order as `INVENTORY_RESERVED`.
+The `process_order` Celery task:
 
-If stock is unavailable, the API returns a validation error and the order is not completed.
+1. Locks the order row.
+2. Locks requested product rows in ID order.
+3. Aggregates requested quantities per product.
+4. Verifies stock is available.
+5. Creates order items.
+6. Decrements stock using database-side `F()` updates.
+7. Stores `total_amount`.
+8. Marks the order `INVENTORY_RESERVED`.
 
-### 4. Initiate payment
+If stock is unavailable, the order becomes `OUT_OF_STOCK` and inventory is unchanged.
 
-After the order is created and inventory is reserved, customers initiate payment with:
+## Async Payment Processing
 
-```http
-POST /api/v1/payments/initiate/
-Authorization: Bearer <access-token>
-Content-Type: application/json
+The payment task:
 
-{
-  "order_id": 123
-}
-```
+1. Marks the order `PAYMENT_PROCESSING`.
+2. Creates a `PaymentTransaction` with `PENDING` status.
+3. Simulates payment success/failure.
+4. Marks transaction `SUCCESS` and order `COMPLETED`, or transaction `FAILED` and order `PAYMENT_FAILED`.
 
-The payment endpoint verifies that the order belongs to the authenticated customer unless the requester is an admin. Payment initiation is allowed only when the order is in a payable state such as `PENDING` or `INVENTORY_RESERVED`.
+Payment proof is the presence of a successful `PaymentTransaction`. Order responses also expose computed `is_paid` and `payment_status` fields.
 
-### 5. Payment result and order status
-
-The payment service creates a payment transaction and updates the order status based on the payment result:
-
-- Successful payment: order becomes `COMPLETED`.
-- Failed payment: order becomes `PAYMENT_FAILED`.
-
-Customers can retry failed payments with:
+## Retry Failed Payment
 
 ```http
 POST /api/v1/payments/{payment_id}/retry/
+Authorization: Bearer <access-token>
 ```
 
-## Backend architecture notes
+Retry is allowed only for failed transactions. The endpoint increments `retry_count`, sets the transaction back to `PENDING`, marks the order `PAYMENT_PROCESSING`, and queues payment processing.
 
-Order creation should stay in the service layer rather than in serializers or views. Views should authenticate the user, validate request payloads, call the service, and return serialized responses. The order service owns business rules such as inventory validation, inventory reservation, order item creation, total calculation, and status transitions.
+## Backend Architecture Notes
+
+Views authenticate users, validate payloads, call services, and return serialized responses. Services own business rules and task orchestration. Repositories keep common query patterns in one place. Celery tasks call service methods so async and test execution use the same business logic.
