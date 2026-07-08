@@ -66,14 +66,20 @@ class PaymentInitiateView(APIView):
             )
 
         try:
-            payment = PaymentService.initiate_payment(order, order.total_amount)
+            payment = PaymentService.initiate_payment(
+                order,
+                order.total_amount,
+                enqueue=False,
+            )
+            payment = PaymentService.process_pending_transaction(payment.id)
         except ValueError as exc:
             return Response(
                 {"success": False, "message": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         serializer = PaymentTransactionSerializer(payment)
-        return Response({"success": True, "message": "Payment queued.", "data": serializer.data}, status=status.HTTP_202_ACCEPTED)
+        message = "Payment completed." if payment.status == PaymentTransaction.Status.SUCCESS else "Payment failed."
+        return Response({"success": True, "message": message, "data": serializer.data})
 
 
 class PaymentRetryView(APIView):
@@ -94,6 +100,8 @@ class PaymentRetryView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        payment = PaymentService.retry_payment(payment)
+        payment = PaymentService.retry_payment(payment, enqueue=False)
+        payment = PaymentService.process_pending_transaction(payment.id)
         serializer = PaymentTransactionSerializer(payment)
-        return Response({"success": True, "message": "Payment retry queued.", "data": serializer.data}, status=status.HTTP_202_ACCEPTED)
+        message = "Payment completed." if payment.status == PaymentTransaction.Status.SUCCESS else "Payment failed."
+        return Response({"success": True, "message": message, "data": serializer.data})

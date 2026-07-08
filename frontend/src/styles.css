@@ -23,6 +23,11 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 260px 1fr;
@@ -254,6 +259,11 @@ select {
 
 .align-right {
   margin-top: 14px;
+}
+
+.action-button {
+  gap: 7px;
+  white-space: nowrap;
 }
 
 .status-line {

@@ -222,8 +222,15 @@ function Products({ admin = false }) {
       .filter((item) => item.quantity > 0);
     if (!items.length) return;
     const response = await apiRequest("/api/v1/orders/", { method: "POST", body: { items } });
-    setMessage(`Order ${response.id} created`);
+    if (response.status === "INVENTORY_RESERVED") {
+      setMessage(`Order #${response.id} created and inventory reserved.`);
+    } else if (response.status === "OUT_OF_STOCK") {
+      setMessage(`Order #${response.id} could not be fulfilled because stock is unavailable.`);
+    } else {
+      setMessage(`Order #${response.id} created.`);
+    }
     setQuantities({});
+    await loadProducts();
   }
 
   async function createProduct(event) {
@@ -305,15 +312,38 @@ function Products({ admin = false }) {
 
 function Orders() {
   const [orders, setOrders] = useState([]);
+  const [message, setMessage] = useState("");
+  const [payingOrderId, setPayingOrderId] = useState(null);
 
   async function loadOrders() {
     const response = await apiRequest("/api/v1/orders/");
     setOrders(normalizeList(response));
   }
 
+  async function payOrder(order) {
+    setMessage("");
+    setPayingOrderId(order.id);
+    try {
+      const response = await apiRequest("/api/v1/payments/initiate/", {
+        method: "POST",
+        body: { order_id: order.id },
+      });
+      setMessage(response.message || `Payment processed for order #${order.id}.`);
+      await loadOrders();
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setPayingOrderId(null);
+    }
+  }
+
   useEffect(() => {
     loadOrders();
   }, []);
+
+  function canPay(order) {
+    return !order.is_paid && ["INVENTORY_RESERVED", "PAYMENT_FAILED"].includes(order.status);
+  }
 
   return (
     <section className="panel">
@@ -328,6 +358,7 @@ function Orders() {
               <th>Paid</th>
               <th>Payment</th>
               <th>Created</th>
+              <th>Action</th>
             </tr>
           </thead>
           <tbody>
@@ -339,11 +370,24 @@ function Orders() {
                 <td>{order.is_paid ? "Yes" : "No"}</td>
                 <td>{order.payment_status || "-"}</td>
                 <td>{new Date(order.created_at).toLocaleString()}</td>
+                <td>
+                  {canPay(order) ? (
+                    <button
+                      className="secondary action-button"
+                      disabled={payingOrderId === order.id}
+                      onClick={() => payOrder(order)}
+                    >
+                      <CreditCard size={16} />
+                      {payingOrderId === order.id ? "Processing" : "Pay"}
+                    </button>
+                  ) : "-"}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {message && <p className={message.toLowerCase().includes("failed") ? "error" : "status-line"}>{message}</p>}
     </section>
   );
 }

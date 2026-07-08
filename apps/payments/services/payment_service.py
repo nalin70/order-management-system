@@ -18,7 +18,7 @@ class PaymentService:
         return uuid.uuid4().hex
 
     @staticmethod
-    def initiate_payment(order: Order, amount=None, enqueue=True):
+    def initiate_payment(order: Order, amount=None, enqueue=False):
         logger.info(
             "Initiating payment for order=%s amount=%s",
             order.id,
@@ -56,7 +56,7 @@ class PaymentService:
         return payment
 
     @staticmethod
-    def retry_payment(payment: PaymentTransaction, enqueue=True):
+    def retry_payment(payment: PaymentTransaction, enqueue=False):
         with transaction.atomic():
             payment = (
                 PaymentTransaction.objects.select_for_update()

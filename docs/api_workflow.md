@@ -1,6 +1,6 @@
 # Order Management System API Workflow
 
-This document describes the backend API responsibilities and the async customer order/payment workflow.
+This document describes the backend API responsibilities and the customer order/payment workflow.
 
 ## Roles
 
@@ -10,6 +10,7 @@ Customer:
 - Browse products.
 - Place orders.
 - View only personal orders.
+- Pay for reserved orders.
 - View and retry personal payment transactions.
 
 Admin:
@@ -34,13 +35,13 @@ Admin:
 | `PATCH /api/v1/products/{id}/` | No | Yes | Admin product update. |
 | `DELETE /api/v1/products/{id}/` | No | Yes | Admin product deletion. |
 | `GET /api/v1/orders/` | Own orders | All orders | Scoped by authenticated user. |
-| `POST /api/v1/orders/` | Yes | Yes | Creates a pending order and queues processing. |
+| `POST /api/v1/orders/` | Yes | Yes | Creates an order and reserves inventory when stock is available. |
 | `GET /api/v1/orders/{id}/` | Own order | Any order | Owner/admin permission. |
 | `PATCH /api/v1/orders/{id}/status/` | No | Yes | Admin-only status update. |
 | `GET /api/v1/payments/` | Own transactions | All transactions | Scoped through order owner. |
-| `POST /api/v1/payments/initiate/` | Own payable order | Any payable order | Manual payment queue endpoint. |
+| `POST /api/v1/payments/initiate/` | Own payable order | Any payable order | Creates and processes a payment transaction. |
 | `GET /api/v1/payments/{id}/` | Own transaction | Any transaction | Owner/admin permission. |
-| `POST /api/v1/payments/{id}/retry/` | Own failed transaction | Any failed transaction | Queues retry task. |
+| `POST /api/v1/payments/{id}/retry/` | Own failed transaction | Any failed transaction | Retries and processes a failed payment transaction. |
 
 ## Customer Journey
 
@@ -48,10 +49,9 @@ Admin:
 Login
   -> Browse products
   -> POST /api/v1/orders/
-  -> Order PENDING
-  -> Celery reserves inventory
   -> Order INVENTORY_RESERVED
-  -> Celery processes payment
+  -> Open Orders page
+  -> Click Pay
   -> Order COMPLETED or PAYMENT_FAILED
 ```
 
@@ -72,11 +72,11 @@ Content-Type: application/json
 }
 ```
 
-The API creates a `PENDING` order and stores requested items. It does not trust a submitted `user_id`; the order owner is always `request.user`.
+The API creates an order and immediately runs inventory reservation. It does not trust a submitted `user_id`; the order owner is always `request.user`. If stock is available, the response has status `INVENTORY_RESERVED` and the customer can pay from the Orders page. If stock is unavailable, the order becomes `OUT_OF_STOCK` and inventory is unchanged.
 
-## Async Inventory Reservation
+## Inventory Reservation
 
-The `process_order` Celery task:
+The order service:
 
 1. Locks the order row.
 2. Locks requested product rows in ID order.
@@ -89,9 +89,10 @@ The `process_order` Celery task:
 
 If stock is unavailable, the order becomes `OUT_OF_STOCK` and inventory is unchanged.
 
-## Async Payment Processing
+## Payment Processing
 
-The payment task:
+Payment starts only when the customer explicitly pays for an order through `POST /api/v1/payments/initiate/`.
+The payment service:
 
 1. Marks the order `PAYMENT_PROCESSING`.
 2. Creates a `PaymentTransaction` with `PENDING` status.
@@ -107,8 +108,8 @@ POST /api/v1/payments/{payment_id}/retry/
 Authorization: Bearer <access-token>
 ```
 
-Retry is allowed only for failed transactions. The endpoint increments `retry_count`, sets the transaction back to `PENDING`, marks the order `PAYMENT_PROCESSING`, and queues payment processing.
+Retry is allowed only for failed transactions. The endpoint increments `retry_count`, sets the transaction back to `PENDING`, marks the order `PAYMENT_PROCESSING`, and processes the payment immediately.
 
 ## Backend Architecture Notes
 
-Views authenticate users, validate payloads, call services, and return serialized responses. Services own business rules and task orchestration. Repositories keep common query patterns in one place. Celery tasks call service methods so async and test execution use the same business logic.
+Views authenticate users, validate payloads, call services, and return serialized responses. Services own business rules and workflow orchestration. Repositories keep common query patterns in one place.

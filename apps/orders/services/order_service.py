@@ -5,7 +5,6 @@ from apps.inventory.models import Product
 from apps.orders.models import Order, OrderItem
 from apps.orders.repositories.order_repository import OrderRepository
 from common.permissions.base import is_admin_user
-from common.utils.tasks import enqueue_task
 
 
 class OrderService:
@@ -25,7 +24,7 @@ class OrderService:
         return None
 
     @staticmethod
-    def create_order(user, items_data, enqueue=True):
+    def create_order(user, items_data):
         if not items_data:
             raise ValueError("Order must contain at least one item.")
 
@@ -47,11 +46,7 @@ class OrderService:
                 requested_items=requested_items,
             )
 
-        if enqueue:
-            from apps.orders.tasks import process_order
-
-            enqueue_task(process_order, order.id)
-        return order
+        return OrderService.process_order(order.id)
 
     @staticmethod
     def update_order_status(order, status):
@@ -60,7 +55,6 @@ class OrderService:
 
     @staticmethod
     def process_order(order_id):
-        queue_payment = False
         with transaction.atomic():
             order = Order.objects.select_for_update().filter(id=order_id).first()
             if not order:
@@ -120,10 +114,4 @@ class OrderService:
             order.total_amount = total_amount
             order.status = Order.Status.INVENTORY_RESERVED
             order.save(update_fields=["total_amount", "status", "updated_at"])
-            queue_payment = True
-
-        if queue_payment:
-            from apps.payments.tasks import process_order_payment
-
-            enqueue_task(process_order_payment, order_id)
         return OrderRepository.get_order(order_id)
